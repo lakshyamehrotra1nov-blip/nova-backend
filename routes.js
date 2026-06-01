@@ -301,6 +301,118 @@ router.delete('/investments/:dbId', async (req, res) => {
   } catch (err) { res.status(400).json({ error: err.message }); }
 });
 
+// --- AI ENDPOINTS (Proxied) ---
+router.post('/ai/advice', async (req, res) => {
+  try {
+    const { income, expenses, balance, formattedExpensesByCategory, formattedBudgets } = req.body;
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) return res.status(400).json({ error: 'GEMINI_API_KEY is missing on server.' });
+
+    const prompt = `
+      You are an expert financial advisor AI inside an expense tracking app.
+      Analyze the following user financial data and provide a short, actionable, and encouraging 3-sentence financial advice.
+      Be specific about their categories. Do not use generic greetings.
+
+      Total Income: ${income}
+      Total Expenses: ${expenses}
+      Current Balance: ${balance}
+      Expenses by Category: ${JSON.stringify(formattedExpensesByCategory)}
+      Budgets set: ${JSON.stringify(formattedBudgets)}
+    `;
+
+    const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }]
+      })
+    });
+
+    if (!aiRes.ok) return res.status(aiRes.status).json({ error: await aiRes.text() });
+    const data = await aiRes.json();
+    res.json({ advice: data.candidates[0].content.parts[0].text });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.post('/ai/scan', async (req, res) => {
+  try {
+    const { base64Image, mimeType } = req.body;
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) return res.status(400).json({ error: 'GEMINI_API_KEY is missing on server.' });
+
+    const prompt = `
+      Analyze this receipt image and extract the following information.
+      Return ONLY a valid, plain JSON object (without markdown blocks like \`\`\`json) with these exact keys:
+      {
+        "amount": <number representing the total amount>,
+        "date": "<string in YYYY-MM-DD format, or today's date if not found>",
+        "category": "<guess the category, e.g., Food, Groceries, Transport, Utilities, General>"
+      }
+    `;
+
+    const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{
+          parts: [
+            { text: prompt },
+            { inline_data: { mime_type: mimeType, data: base64Image.split(',')[1] } }
+          ]
+        }]
+      })
+    });
+
+    if (!aiRes.ok) return res.status(aiRes.status).json({ error: await aiRes.text() });
+    const data = await aiRes.json();
+    res.json({ result: data.candidates[0].content.parts[0].text });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.post('/ai/chat', async (req, res) => {
+  try {
+    const { query, formattedHistory, systemContext } = req.body;
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) return res.status(400).json({ error: 'GEMINI_API_KEY is missing on server.' });
+
+    const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        system_instruction: { parts: [{ text: systemContext }] },
+        contents: [
+          ...formattedHistory,
+          { role: 'user', parts: [{ text: query }] }
+        ]
+      })
+    });
+
+    if (!aiRes.ok) {
+      const errText = await aiRes.text();
+      let readableError = "API Error";
+      try {
+        const errJson = JSON.parse(errText);
+        if (errJson.error && errJson.error.message) {
+          readableError = errJson.error.message;
+          if (readableError.includes("is not found")) {
+            const modelsRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
+            const modelsData = await modelsRes.json();
+            const modelNames = modelsData.models.map(m => m.name.replace('models/', '')).filter(n => n.includes('gemini')).join(', ');
+            readableError += ` AVAILABLE MODELS: ${modelNames}`;
+          }
+          if (aiRes.status === 429 || readableError.includes("quota") || readableError.includes("429")) {
+            readableError = "I'm thinking too fast! Nova AI's rate limit was reached. Please wait about 15 seconds and try again. ⏳";
+          }
+        }
+      } catch (e) {}
+      return res.status(aiRes.status).json({ error: readableError });
+    }
+
+    const data = await aiRes.json();
+    res.json({ result: data.candidates[0].content.parts[0].text });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // --- WIPE ALL (Reset) ---
 router.post('/wipe', async (req, res) => {
   try {
