@@ -4,6 +4,32 @@ const { Transaction, Budget, Subscription, Settings, Goal, Wallet, User, Otp, In
 const bcrypt = require('bcryptjs');
 const nodemailer = require('nodemailer');
 
+// --- SELF-HEALING AI WRAPPER ---
+async function fetchGeminiWithSelfHealing(apiKey, bodyPayload, model = 'gemini-2.5-flash') {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(bodyPayload)
+  });
+
+  if (!res.ok) {
+    const errText = await res.text();
+    // If model is deprecated/not found, parse Google's error to find a valid replacement and self-heal
+    if (errText.includes('is not found') && errText.includes('AVAILABLE MODELS:')) {
+      const match = errText.match(/AVAILABLE MODELS:\s*([^,]+)/);
+      if (match && match[1]) {
+        const nextModel = match[1].trim();
+        console.log(`[Auto-Heal] Model ${model} deprecated. Retrying with ${nextModel}`);
+        return await fetchGeminiWithSelfHealing(apiKey, bodyPayload, nextModel);
+      }
+    }
+    return { ok: false, status: res.status, errorText: errText };
+  }
+  
+  return { ok: true, data: await res.json() };
+}
+
 // --- EMAIL TRANSPORTER ---
 let transporter;
 
@@ -376,25 +402,16 @@ router.post('/ai/scan', async (req, res) => {
       }
     `;
 
-    const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{
-          parts: [
-            { text: prompt },
-            { inline_data: { mime_type: mimeType, data: base64Image.split(',')[1] } }
-          ]
-        }],
-        generationConfig: {
-          response_mime_type: "application/json"
-        }
-      })
+    const aiRes = await fetchGeminiWithSelfHealing(apiKey, {
+      contents: [
+        { parts: [{ text: `System Context: ${prompt}` }] },
+        { parts: [{ inlineData: { mimeType, data: base64Image } }] }
+      ],
+      generationConfig: { response_mime_type: "application/json" }
     });
 
-    if (!aiRes.ok) return res.status(aiRes.status).json({ error: await aiRes.text() });
-    const data = await aiRes.json();
-    res.json({ result: data.candidates[0].content.parts[0].text });
+    if (!aiRes.ok) return res.status(aiRes.status).json({ error: aiRes.errorText });
+    res.json({ result: aiRes.data.candidates[0].content.parts[0].text });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -421,20 +438,13 @@ router.post('/ai/import', async (req, res) => {
       ${csvText}
     `;
 
-    const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        generationConfig: {
-          response_mime_type: "application/json"
-        }
-      })
+    const aiRes = await fetchGeminiWithSelfHealing(apiKey, {
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: { response_mime_type: "application/json" }
     });
 
-    if (!aiRes.ok) return res.status(aiRes.status).json({ error: await aiRes.text() });
-    const data = await aiRes.json();
-    res.json({ result: data.candidates[0].content.parts[0].text });
+    if (!aiRes.ok) return res.status(aiRes.status).json({ error: aiRes.errorText });
+    res.json({ result: aiRes.data.candidates[0].content.parts[0].text });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -444,44 +454,30 @@ router.post('/ai/chat', async (req, res) => {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) return res.status(400).json({ error: 'GEMINI_API_KEY is missing on server.' });
 
-    const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: systemContext }] },
-        contents: [
-          ...formattedHistory,
-          { role: 'user', parts: [{ text: query }] }
-        ],
-        generationConfig: {
-          response_mime_type: "application/json"
-        }
-      })
+    const aiRes = await fetchGeminiWithSelfHealing(apiKey, {
+      system_instruction: { parts: [{ text: systemContext }] },
+      contents: [
+        ...formattedHistory,
+        { role: 'user', parts: [{ text: query }] }
+      ],
+      generationConfig: { response_mime_type: "application/json" }
     });
 
     if (!aiRes.ok) {
-      const errText = await aiRes.text();
       let readableError = "API Error";
       try {
-        const errJson = JSON.parse(errText);
+        const errJson = JSON.parse(aiRes.errorText);
         if (errJson.error && errJson.error.message) {
           readableError = errJson.error.message;
-          if (readableError.includes("is not found")) {
-            const modelsRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`);
-            const modelsData = await modelsRes.json();
-            const modelNames = modelsData.models.map(m => m.name.replace('models/', '')).filter(n => n.includes('gemini')).join(', ');
-            readableError += ` AVAILABLE MODELS: ${modelNames}`;
-          }
-          if (aiRes.status === 429 || readableError.includes("quota") || readableError.includes("429")) {
-            readableError = "I'm thinking too fast! Nova AI's rate limit was reached. Please wait about 15 seconds and try again. ⏳";
-          }
         }
       } catch (e) {}
+      if (aiRes.status === 429 || readableError.includes("quota") || readableError.includes("429")) {
+        readableError = "I'm thinking too fast! Nova AI's rate limit was reached. Please wait about 15 seconds and try again. ⏳";
+      }
       return res.status(aiRes.status).json({ error: readableError });
     }
 
-    const data = await aiRes.json();
-    res.json({ result: data.candidates[0].content.parts[0].text });
+    res.json({ result: aiRes.data.candidates[0].content.parts[0].text });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
