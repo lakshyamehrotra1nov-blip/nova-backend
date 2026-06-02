@@ -350,7 +350,7 @@ router.post('/ai/scan', async (req, res) => {
       }
     `;
 
-    const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent?key=${apiKey}`, {
+    const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -359,7 +359,10 @@ router.post('/ai/scan', async (req, res) => {
             { text: prompt },
             { inline_data: { mime_type: mimeType, data: base64Image.split(',')[1] } }
           ]
-        }]
+        }],
+        generationConfig: {
+          response_mime_type: "application/json"
+        }
       })
     });
 
@@ -375,7 +378,7 @@ router.post('/ai/chat', async (req, res) => {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) return res.status(400).json({ error: 'GEMINI_API_KEY is missing on server.' });
 
-    const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-lite-latest:generateContent?key=${apiKey}`, {
+    const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${apiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -383,7 +386,10 @@ router.post('/ai/chat', async (req, res) => {
         contents: [
           ...formattedHistory,
           { role: 'user', parts: [{ text: query }] }
-        ]
+        ],
+        generationConfig: {
+          response_mime_type: "application/json"
+        }
       })
     });
 
