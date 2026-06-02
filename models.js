@@ -20,6 +20,8 @@ const SubscriptionSchema = new mongoose.Schema({
   date: { type: Number, required: true },
   category: { type: String, default: 'Uncategorized' },
   type: { type: String, enum: ['income', 'expense'], default: 'expense' },
+  isFreeTrial: { type: Boolean, default: false },
+  trialEndDate: { type: String }
 }, { timestamps: true });
 
 const SettingsSchema = new mongoose.Schema({
@@ -59,6 +61,13 @@ const InvestmentSchema = new mongoose.Schema({
   amount: { type: Number, required: true },
 }, { timestamps: true });
 
+const DebtSchema = new mongoose.Schema({
+  name: { type: String, required: true },
+  balance: { type: Number, required: true },
+  interestRate: { type: Number, required: true },
+  minimumPayment: { type: Number, required: true },
+}, { timestamps: true });
+
 module.exports = {
   Transaction: mongoose.model('Transaction', TransactionSchema),
   Budget: mongoose.model('Budget', BudgetSchema),
@@ -69,4 +78,5 @@ module.exports = {
   User: mongoose.model('User', UserSchema),
   Otp: mongoose.model('Otp', OtpSchema),
   Investment: mongoose.model('Investment', InvestmentSchema),
+  Debt: mongoose.model('Debt', DebtSchema),
 };

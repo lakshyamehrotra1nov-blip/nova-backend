@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
-const { Transaction, Budget, Subscription, Settings, Goal, Wallet, User, Otp, Investment } = require('./models');
+const { Transaction, Budget, Subscription, Settings, Goal, Wallet, User, Otp, Investment, Debt } = require('./models');
+const bcrypt = require('bcryptjs');
 const nodemailer = require('nodemailer');
 
 // --- EMAIL TRANSPORTER ---
@@ -170,7 +171,9 @@ router.post('/subscriptions', async (req, res) => {
       amount: req.body.amount,
       date: req.body.date,
       category: req.body.category,
-      type: req.body.type || 'expense'
+      type: req.body.type || 'expense',
+      isFreeTrial: req.body.isFreeTrial || false,
+      trialEndDate: req.body.trialEndDate || null
     });
     await sub.save();
     res.status(201).json({ id: sub._id, ...sub.toObject() });
@@ -180,6 +183,29 @@ router.post('/subscriptions', async (req, res) => {
 router.delete('/subscriptions/:id', async (req, res) => {
   try {
     await Subscription.findByIdAndDelete(req.params.id);
+    res.json({ message: 'Deleted' });
+  } catch (err) { res.status(400).json({ error: err.message }); }
+});
+
+// --- DEBTS ---
+router.get('/debts', async (req, res) => {
+  try {
+    const debts = await Debt.find();
+    res.json(debts.map(d => ({ id: d._id, ...d.toObject() })));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.post('/debts', async (req, res) => {
+  try {
+    const debt = new Debt(req.body);
+    await debt.save();
+    res.status(201).json({ id: debt._id, ...debt.toObject() });
+  } catch (err) { res.status(400).json({ error: err.message }); }
+});
+
+router.delete('/debts/:id', async (req, res) => {
+  try {
+    await Debt.findByIdAndDelete(req.params.id);
     res.json({ message: 'Deleted' });
   } catch (err) { res.status(400).json({ error: err.message }); }
 });
@@ -360,6 +386,46 @@ router.post('/ai/scan', async (req, res) => {
             { inline_data: { mime_type: mimeType, data: base64Image.split(',')[1] } }
           ]
         }],
+        generationConfig: {
+          response_mime_type: "application/json"
+        }
+      })
+    });
+
+    if (!aiRes.ok) return res.status(aiRes.status).json({ error: await aiRes.text() });
+    const data = await aiRes.json();
+    res.json({ result: data.candidates[0].content.parts[0].text });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+router.post('/ai/import', async (req, res) => {
+  try {
+    const { csvText } = req.body;
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) return res.status(400).json({ error: 'GEMINI_API_KEY is missing on server.' });
+
+    const prompt = `
+      You are an AI designed to parse bank statement CSVs into clean JSON.
+      I will provide raw CSV text. Return ONLY a valid JSON array of objects representing the transactions.
+      Each object must have these exact keys:
+      {
+        "date": "YYYY-MM-DD",
+        "amount": number (positive absolute value),
+        "type": "expense" or "income",
+        "category": "Food, Transport, Utilities, Housing, Shopping, Entertainment, Healthcare, General, Salary, Investment, etc",
+        "note": "Short description based on the CSV description"
+      }
+      If it's a credit or deposit, type is "income". If it's a debit or charge, type is "expense".
+      
+      CSV DATA:
+      ${csvText}
+    `;
+
+    const aiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
           response_mime_type: "application/json"
         }
